@@ -1,9 +1,11 @@
 # odrive_ros2_control
-ENGLISH / [中文](<README_CN.md>)
+ENGLISH
+
+**This is heavily modified and specialized, please see original repo (go up the fork)**
 ## Introduction
 ODrive driver for ros2_control
 ## Prerequisites
-* ROS Foxy
+* ROS Galactic
 * ODrive Firmware v0.5.3
 ## Documentation
 - [Wiki](https://github.com/Factor-Robotics/odrive_ros2_control/wiki/Documentation)
