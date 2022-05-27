@@ -17,11 +17,11 @@
 
 namespace odrive_hardware_interface
 {
-return_type ODriveHardwareInterface::configure(const hardware_interface::HardwareInfo& info)
+CallbackReturn ODriveHardwareInterface::on_init(const hardware_interface::HardwareInfo& info)
 {
-  if (configure_default(info) != return_type::OK)
+  if (hardware_interface::SystemInterface::on_init(info) != CallbackReturn::SUCCESS)
   {
-    return return_type::ERROR;
+    return CallbackReturn::ERROR;
   }
 
   serial_numbers_.resize(2);
@@ -52,30 +52,30 @@ return_type ODriveHardwareInterface::configure(const hardware_interface::Hardwar
     serial_numbers_[1].emplace_back(std::stoull(joint.parameters.at("serial_number"), 0, 16));
     axes_.emplace_back(std::stoi(joint.parameters.at("axis")));
     enable_watchdogs_.emplace_back(std::stoi(joint.parameters.at("enable_watchdog")));
+    gear_ratios_.emplace_back(std::stod(joint.parameters.at("gear_ratio")));
   }
 
   odrive = new ODriveUSB();
-  CHECK(odrive->init(serial_numbers_));
+  CHECK_STATE__(odrive->init(serial_numbers_));
 
   for (size_t i = 0; i < info_.joints.size(); i++)
   {
     float torque_constant;
-    CHECK(odrive->read(serial_numbers_[1][i], AXIS__MOTOR__CONFIG__TORQUE_CONSTANT + per_axis_offset * axes_[i],
+    CHECK_STATE__(odrive->read(serial_numbers_[1][i], AXIS__MOTOR__CONFIG__TORQUE_CONSTANT + per_axis_offset * axes_[i],
                        torque_constant));
     torque_constants_.emplace_back(torque_constant);
 
     if (enable_watchdogs_[i])
     {
-      CHECK(odrive->write(serial_numbers_[1][i], AXIS__CONFIG__WATCHDOG_TIMEOUT + per_axis_offset * axes_[i],
+      CHECK_STATE__(odrive->write(serial_numbers_[1][i], AXIS__CONFIG__WATCHDOG_TIMEOUT + per_axis_offset * axes_[i],
                           std::stof(info_.joints[i].parameters.at("watchdog_timeout"))));
     }
-    CHECK(odrive->write(serial_numbers_[1][i], AXIS__CONFIG__ENABLE_WATCHDOG + per_axis_offset * axes_[i],
+    CHECK_STATE__(odrive->write(serial_numbers_[1][i], AXIS__CONFIG__ENABLE_WATCHDOG + per_axis_offset * axes_[i],
                         (bool)enable_watchdogs_[i]));
   }
 
   control_level_.resize(info_.joints.size(), integration_level_t::UNDEFINED);
-  status_ = hardware_interface::status::CONFIGURED;
-  return return_type::OK;
+  return CallbackReturn::SUCCESS;
 }
 
 std::vector<hardware_interface::StateInterface> ODriveHardwareInterface::export_state_interfaces()
@@ -196,7 +196,7 @@ return_type ODriveHardwareInterface::prepare_command_mode_switch(const std::vect
           control_mode = (int32_t)new_modes[i];
           CHECK(odrive->write(serial_numbers_[1][i],
                               AXIS__CONTROLLER__CONFIG__CONTROL_MODE + per_axis_offset * axes_[i], control_mode));
-          input_vel = hw_commands_velocities_[i] / 2 / M_PI;
+          input_vel = (hw_commands_velocities_[i] / 2 / M_PI) * gear_ratios_[i];
           CHECK(odrive->write(serial_numbers_[1][i], AXIS__CONTROLLER__INPUT_VEL + per_axis_offset * axes_[i],
                               input_vel));
           input_torque = hw_commands_efforts_[i];
@@ -214,10 +214,10 @@ return_type ODriveHardwareInterface::prepare_command_mode_switch(const std::vect
           control_mode = (int32_t)new_modes[i];
           CHECK(odrive->write(serial_numbers_[1][i],
                               AXIS__CONTROLLER__CONFIG__CONTROL_MODE + per_axis_offset * axes_[i], control_mode));
-          input_pos = hw_commands_positions_[i] / 2 / M_PI;
+          input_pos = (hw_commands_positions_[i] / 2 / M_PI) * gear_ratios_[i];
           CHECK(odrive->write(serial_numbers_[1][i], AXIS__CONTROLLER__INPUT_POS + per_axis_offset * axes_[i],
                               input_pos));
-          input_vel = hw_commands_velocities_[i] / 2 / M_PI;
+          input_vel = (hw_commands_velocities_[i] / 2 / M_PI) * gear_ratios_[i];
           CHECK(odrive->write(serial_numbers_[1][i], AXIS__CONTROLLER__INPUT_VEL + per_axis_offset * axes_[i],
                               input_vel));
           input_torque = hw_commands_efforts_[i];
@@ -235,31 +235,29 @@ return_type ODriveHardwareInterface::prepare_command_mode_switch(const std::vect
   return return_type::OK;
 }
 
-return_type ODriveHardwareInterface::start()
+CallbackReturn ODriveHardwareInterface::on_activate(const rclcpp_lifecycle::State & previous_state)
 {
   for (size_t i = 0; i < info_.joints.size(); i++)
   {
     if (enable_watchdogs_[i])
     {
-      CHECK(odrive->call(serial_numbers_[1][i], AXIS__WATCHDOG_FEED + per_axis_offset * axes_[i]));
+      CHECK_STATE__(odrive->call(serial_numbers_[1][i], AXIS__WATCHDOG_FEED + per_axis_offset * axes_[i]));
     }
-    CHECK(odrive->call(serial_numbers_[1][i], CLEAR_ERRORS));
+    CHECK_STATE__(odrive->call(serial_numbers_[1][i], CLEAR_ERRORS));
   }
 
-  status_ = hardware_interface::status::STARTED;
-  return return_type::OK;
+  return CallbackReturn::SUCCESS;
 }
 
-return_type ODriveHardwareInterface::stop()
+CallbackReturn ODriveHardwareInterface::on_deactivate(const rclcpp_lifecycle::State & previous_state)
 {
   int32_t requested_state = AXIS_STATE_IDLE;
   for (size_t i = 0; i < info_.joints.size(); i++)
   {
-    CHECK(odrive->write(serial_numbers_[1][i], AXIS__REQUESTED_STATE + per_axis_offset * axes_[i], requested_state));
+    CHECK_STATE__(odrive->write(serial_numbers_[1][i], AXIS__REQUESTED_STATE + per_axis_offset * axes_[i], requested_state));
   }
 
-  status_ = hardware_interface::status::STOPPED;
-  return return_type::OK;
+  return CallbackReturn::SUCCESS;
 }
 
 return_type ODriveHardwareInterface::read()
@@ -285,10 +283,10 @@ return_type ODriveHardwareInterface::read()
     hw_efforts_[i] = Iq_measured * torque_constants_[i];
 
     CHECK(odrive->read(serial_numbers_[1][i], AXIS__ENCODER__VEL_ESTIMATE + per_axis_offset * axes_[i], vel_estimate));
-    hw_velocities_[i] = vel_estimate * 2 * M_PI;
+    hw_velocities_[i] = (vel_estimate * 2 * M_PI)/gear_ratios_[i];
 
     CHECK(odrive->read(serial_numbers_[1][i], AXIS__ENCODER__POS_ESTIMATE + per_axis_offset * axes_[i], pos_estimate));
-    hw_positions_[i] = pos_estimate * 2 * M_PI;
+    hw_positions_[i] = (pos_estimate * 2 * M_PI)/gear_ratios_[i];
 
     CHECK(odrive->read(serial_numbers_[1][i], AXIS__ERROR + per_axis_offset * axes_[i], axis_error));
     hw_axis_errors_[i] = axis_error;
@@ -323,12 +321,12 @@ return_type ODriveHardwareInterface::write()
     switch (control_level_[i])
     {
       case integration_level_t::POSITION:
-        input_pos = hw_commands_positions_[i] / 2 / M_PI;
+        input_pos = (hw_commands_positions_[i] / 2 / M_PI) * gear_ratios_[i];
         CHECK(
             odrive->write(serial_numbers_[1][i], AXIS__CONTROLLER__INPUT_POS + per_axis_offset * axes_[i], input_pos));
 
       case integration_level_t::VELOCITY:
-        input_vel = hw_commands_velocities_[i] / 2 / M_PI;
+        input_vel = (hw_commands_velocities_[i] / 2 / M_PI) * gear_ratios_[i];
         CHECK(
             odrive->write(serial_numbers_[1][i], AXIS__CONTROLLER__INPUT_VEL + per_axis_offset * axes_[i], input_vel));
 
